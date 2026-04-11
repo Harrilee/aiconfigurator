@@ -127,7 +127,8 @@ def _add_default_mode_arguments(parser):
         choices=[backend.value for backend in common.BackendName] + ["auto"],
         type=str,
         default=common.BackendName.trtllm.value,
-        help="Backend name. Use 'auto' to sweep across all backends (trtllm, vllm, sglang) and compare results.",
+        help="Backend name. Use a specific backend (trtllm, vllm, sglang) or auto to sweep across "
+        "all supported backends and compare results side by side. Default: trtllm.",
     )
     parser.add_argument(
         "--backend-version",
@@ -162,14 +163,19 @@ def _add_default_mode_arguments(parser):
         "--nextn",
         type=int,
         default=0,
-        help="Number of draft tokens for MTP (Multi-Token Prediction) speculative decoding. Default is 0 (disabled).",
+        help="Number of draft tokens for MTP (Multi-Token Prediction) speculative decoding. "
+        "When set > 0, enables speculative decoding in the configuration search. "
+        "Requires the model to support MTP. Default is 0 (disabled).",
     )
     parser.add_argument(
         "--nextn-accept-rates",
         type=str,
         default="0.85,0.3,0,0,0",
-        help="Acceptance rates for MTP draft tokens. Comma-separated list of 5 floats. "
-        "Default is '0.85,0.3,0,0,0' meaning 1st token has 85%% acceptance, 2nd has 30%%, rest are 0.",
+        help="Comma-separated acceptance rates for MTP draft tokens (5 values). "
+        "Each value represents the acceptance probability of the i-th draft token. "
+        "Only the first --nextn values are used. "
+        "Example: 0.85,0.3,0,0,0 means 1st draft token has 85%% acceptance, "
+        "2nd has 30%%, rest unused. Default: 0.85,0.3,0,0,0.",
     )
     parser.add_argument(
         "--enable-chunked-prefill",
@@ -1475,6 +1481,18 @@ def main(args):
         return
 
     if args.mode == "default":
+        # Log the effective SLA and workload parameters so the user knows what is being used
+        logger.info(
+            "Effective parameters: ISL=%d, OSL=%d, TTFT=%.1fms, TPOT=%.1fms, backend=%s",
+            args.isl, args.osl, args.ttft, args.tpot, args.backend,
+        )
+        if args.request_latency is not None:
+            logger.info("  Request latency target: %.1fms", args.request_latency)
+        if args.nextn > 0:
+            logger.info(
+                "  Speculative decoding: nextn=%d, accept_rates=%s",
+                args.nextn, args.nextn_accept_rates,
+            )
         task_configs = build_default_task_configs(
             model_path=args.model_path,
             total_gpus=args.total_gpus,

@@ -5,6 +5,41 @@ As mentioned in root Readme, CLI supports five modes: `default`, `exp`, `generat
 Quantization defaults are inferred from the Hugging Face model config (`config.json` plus optional `hf_quant_config.json`).  
 For low-precision models, use a quantized HF ID (for example, `Qwen/Qwen3-32B-FP8`) or a local model directory containing those files.
 
+## Defaults and Implicit Behavior
+
+When using `default` mode, several parameters have default values that affect
+which configurations are considered feasible. These defaults are applied
+silently unless overridden:
+
+| Parameter | Default | Flag | Effect |
+|-----------|---------|------|--------|
+| ISL (Input Sequence Length) | 4000 | `--isl` | Assumed input prompt length |
+| OSL (Output Sequence Length) | 1000 | `--osl` | Assumed output generation length |
+| TTFT (Time to First Token) | 2000 ms | `--ttft` | Max acceptable time to first token |
+| TPOT (Time per Output Token) | 30 ms | `--tpot` | Max acceptable time per output token |
+| Backend | trtllm | `--backend` | Inference backend used for estimation |
+| Prefix Cache Length | 0 | `--prefix` | Prefix cache length for KV reuse |
+| Database Mode | SILICON | `--database-mode` | Source of performance data |
+| MTP Draft Tokens | 0 (disabled) | `--nextn` | Speculative decoding draft count |
+| MTP Accept Rates | 0.85,0.3,0,0,0 | `--nextn-accept-rates` | Per-position draft token acceptance rates |
+| Chunked Prefill | disabled | `--enable-chunked-prefill` | Finer context token sweep granularity |
+
+**Important:** The TTFT and TPOT defaults act as **SLA filters** — configurations
+that exceed these thresholds are excluded from results. If you see fewer
+results than expected, consider relaxing these values or setting them
+explicitly.
+
+The effective parameter values are logged at INFO level when a run starts,
+so you can always verify what values are being used.
+
+### Backend "auto" mode
+
+The `--backend auto` option runs the parameter sweep across all supported
+backends (trtllm, vllm, sglang) for the given system and compares results
+side by side. The best configuration across all backends is selected. This
+is useful for finding the globally optimal backend without running separate
+commands.
+
 ### Generate mode (Quick Start)
 This mode generates a working configuration without running the full parameter sweep. It's useful when you want a quick deployment config without SLA optimization.
 
