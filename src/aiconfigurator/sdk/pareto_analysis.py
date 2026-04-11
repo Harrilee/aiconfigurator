@@ -22,6 +22,24 @@ from aiconfigurator.sdk.utils import enumerate_ttft_tpot_constraints
 
 logger = logging.getLogger(__name__)
 
+# Translation table: Unicode box-drawing → ASCII equivalents, used when stdout is not a TTY.
+_UNICODE_BOX_TO_ASCII = str.maketrans(
+    {
+        # Corners
+        "┌": "+", "┐": "+", "└": "+", "┘": "+",
+        # Junctions
+        "├": "+", "┤": "+", "┬": "+", "┴": "+", "┼": "+",
+        # Horizontal lines
+        "─": "-", "━": "-", "╌": "-", "╍": "-",
+        # Vertical lines
+        "│": "|", "┃": "|", "╎": "|", "╏": "|",
+        # Double-line box drawing
+        "╔": "+", "╗": "+", "╚": "+", "╝": "+",
+        "╠": "+", "╣": "+", "╦": "+", "╩": "+", "╬": "+",
+        "═": "-", "║": "|",
+    }
+)
+
 
 def agg_pareto(
     model_path: str,
@@ -485,6 +503,7 @@ def draw_pareto_to_string(
         if use_plain_cli_output():
             ansi_escape_8bit = re.compile(r"(?:\x1B[@-Z\\-_]|[\x80-\x9A\x9C-\x9F]|(?:\x1B\[|\x9B)[0-?]*[ -/]*[@-~])")
             buf = ansi_escape_8bit.sub("", buf)
+            buf = buf.translate(_UNICODE_BOX_TO_ASCII)
     except Exception:
         logger.exception("failed to build plotext")
         buf = ""
