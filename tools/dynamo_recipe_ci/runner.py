@@ -59,15 +59,11 @@ class Target:
     identifier: str
     include: tuple[str, ...]
     exclude: tuple[str, ...]
-    gate: bool
     min_matches: int
     max_matches: int | None
     performance: str | None
     overrides: dict[str, Any]
     path_overrides: dict[str, dict[str, Any]]
-    expected_mapping: str
-    expected_estimate: str
-    expected_by_path: dict[str, dict[str, str]]
 
 
 @dataclass(frozen=True)
@@ -121,15 +117,6 @@ def load_manifest(path: Path) -> Manifest:
         excludes = (exclude_value,) if isinstance(exclude_value, str) else tuple(exclude_value or ())
         if not all(isinstance(pattern, str) for pattern in excludes):
             raise ValueError(f"manifest target {identifier!r} exclude must contain glob strings")
-        expected = item.get("expected", {})
-        if not isinstance(expected, dict):
-            raise TypeError(f"manifest target {identifier!r} expected must be an object")
-        expected_mapping = str(expected.get("mapping", "adapted"))
-        expected_estimate = str(expected.get("estimate", "any"))
-        if expected_mapping not in {"adapted", "any"}:
-            raise ValueError(f"manifest target {identifier!r} has invalid expected.mapping")
-        if expected_estimate not in {"valid", "unavailable", "any"}:
-            raise ValueError(f"manifest target {identifier!r} has invalid expected.estimate")
         min_matches = int(item.get("min_matches", 1))
         max_matches_value = item.get("max_matches")
         max_matches = int(max_matches_value) if max_matches_value is not None else None
@@ -141,30 +128,16 @@ def load_manifest(path: Path) -> Manifest:
             isinstance(key, str) and isinstance(value, dict) for key, value in path_overrides.items()
         ):
             raise TypeError(f"manifest target {identifier!r} path_overrides must map paths to objects")
-        expected_by_path = item.get("expected_by_path", {})
-        if not isinstance(expected_by_path, dict) or not all(
-            isinstance(key, str) and isinstance(value, dict) for key, value in expected_by_path.items()
-        ):
-            raise TypeError(f"manifest target {identifier!r} expected_by_path must map paths to objects")
-        for recipe_path, path_expected in expected_by_path.items():
-            mapping = path_expected.get("mapping", expected_mapping)
-            estimate = path_expected.get("estimate", expected_estimate)
-            if mapping not in {"adapted", "any"} or estimate not in {"valid", "unavailable", "any"}:
-                raise ValueError(f"manifest target {identifier!r} has invalid expectation for {recipe_path}")
         targets.append(
             Target(
                 identifier=identifier,
                 include=includes,
                 exclude=excludes,
-                gate=bool(item.get("gate", False)),
                 min_matches=min_matches,
                 max_matches=max_matches,
                 performance=item.get("performance"),
                 overrides=overrides,
                 path_overrides=path_overrides,
-                expected_mapping=expected_mapping,
-                expected_estimate=expected_estimate,
-                expected_by_path=expected_by_path,
             )
         )
     return Manifest(defaults=defaults, targets=tuple(targets))
@@ -219,7 +192,7 @@ def discover_recipes(dynamo_root: Path, manifest: Manifest) -> tuple[list[Recipe
             errors.append(f"{target.identifier}: matched {count} recipes, expected at least {target.min_matches}")
         if target.max_matches is not None and count > target.max_matches:
             errors.append(f"{target.identifier}: matched {count} recipes, expected at most {target.max_matches}")
-        declared_paths = set(target.path_overrides) | set(target.expected_by_path)
+        declared_paths = set(target.path_overrides)
         discovered_paths = {recipe.relative_path for recipe in recipes if recipe.target == target}
         for missing_path in sorted(declared_paths - discovered_paths):
             errors.append(f"{target.identifier}: declared recipe path was not discovered: {missing_path}")
@@ -305,7 +278,6 @@ def adapt_recipe(recipe: Recipe, manifest: Manifest, dynamo_sha: str) -> list[di
             "source_url": f"https://github.com/ai-dynamo/dynamo/blob/{dynamo_sha}/{recipe.relative_path}",
             "performance": recipe.performance_relative_path,
             "target": recipe.target.identifier if recipe.target else None,
-            "gated": bool(recipe.target and recipe.target.gate),
             "point_id": outcome.point_id,
             "mapping": {
                 "status": outcome.status,
@@ -421,26 +393,14 @@ def run_estimates(records: list[dict[str, Any]], jobs: int, timeout_seconds: int
             return [future.result() for future in as_completed(futures)]
 
 
-def gate_violations(records: list[dict[str, Any]], manifest: Manifest, discovery_errors: list[str]) -> list[str]:
+def gate_violations(records: list[dict[str, Any]], discovery_errors: list[str]) -> list[str]:
     violations = list(discovery_errors)
-    targets = {target.identifier: target for target in manifest.targets}
     for record in records:
-        target_id = record.get("target")
-        target = targets.get(target_id)
-        if target is None or not target.gate:
+        if record["mapping"]["status"] != "adapted":
             continue
-        mapping_status = record["mapping"]["status"]
         estimate_status = record["estimate"]["status"]
-        path_expected = target.expected_by_path.get(record["recipe"], {})
-        expected_mapping = path_expected.get("mapping", target.expected_mapping)
-        expected_estimate = path_expected.get("estimate", target.expected_estimate)
-        if expected_mapping == "adapted" and mapping_status != "adapted":
-            violations.append(f"{record['id']}: mapping regressed to {mapping_status}")
-            continue
-        if expected_estimate == "valid" and estimate_status != "valid":
-            violations.append(f"{record['id']}: estimate regressed to {estimate_status}")
-        elif expected_estimate == "unavailable" and estimate_status in {"error", "timeout"}:
-            violations.append(f"{record['id']}: known unavailable estimate became {estimate_status}")
+        if estimate_status != "valid":
+            violations.append(f"{record['id']}: adapted estimate finished as {estimate_status}")
     return violations
 
 
@@ -460,6 +420,33 @@ def _summary(records: list[dict[str, Any]], dynamo_sha: str, violations: list[st
         "gate_passed": not violations,
         "violations": violations,
     }
+
+
+def _comment_markdown(summary: dict[str, Any], records: list[dict[str, Any]]) -> str:
+    failed = [
+        record
+        for record in records
+        if record["mapping"]["status"] == "adapted" and record["estimate"]["status"] != "valid"
+    ]
+    lines = [
+        "## Dynamo Recipe Replay",
+        "",
+        f"**Estimate gate: {'PASS' if summary['gate_passed'] else 'FAIL'}**",
+        "",
+        f"- Dynamo SHA: `{summary['dynamo_sha']}`",
+        f"- Recipes discovered: {summary['recipes']}",
+        f"- Successfully adapted: {summary['mapping'].get('adapted', 0)}",
+        f"- Mapping rejected (report only): {summary['mapping'].get('rejected', 0)}",
+        f"- Valid estimates: {summary['estimates'].get('valid', 0)}",
+        f"- Adapted estimates that failed: {len(failed)}",
+    ]
+    if failed:
+        lines.extend(("", "### Failed adapted estimates", "", "| Recipe | Status |", "| --- | --- |"))
+        for record in sorted(failed, key=lambda item: item["id"])[:20]:
+            lines.append(f"| `{record['recipe']}` | {record['estimate']['status']} |")
+        if len(failed) > 20:
+            lines.append(f"| … | {len(failed) - 20} more in the full report |")
+    return "\n".join(lines) + "\n"
 
 
 def _markdown(summary: dict[str, Any], records: list[dict[str, Any]]) -> str:
@@ -568,13 +555,14 @@ def run_corpus(
     records = [record for recipe in recipes for record in adapt_recipe(recipe, manifest, dynamo_sha)]
     records = run_estimates(records, jobs, timeout_seconds)
     records.sort(key=lambda item: item["id"])
-    violations = gate_violations(records, manifest, discovery_errors)
+    violations = gate_violations(records, discovery_errors)
     summary = _summary(records, dynamo_sha, violations)
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "results.json").write_text(
         json.dumps({"summary": summary, "results": records}, indent=2, sort_keys=True) + "\n"
     )
     (output_dir / "summary.md").write_text(_markdown(summary, records))
+    (output_dir / "comment.md").write_text(_comment_markdown(summary, records))
     return 0 if not violations else 1
 
 
@@ -584,7 +572,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--manifest",
         type=Path,
-        default=Path(__file__).with_name("aic_1743.yaml"),
+        default=Path(__file__).with_name("corpus.yaml"),
     )
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--jobs", type=int, default=2)

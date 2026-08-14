@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+version: 1
+
+defaults:
+  missing_system_name: gb300
+  overrides:
+    database_mode: SILICON
+    workload_points:
+      - point_id: agentic-64k-400
+        isl: 65536
+        osl: 400
+        concurrency: 64
+        prefix: 58982
+    kvcache_quant_mode: fp8
+
+# Optional selectors may add literal overrides for recipe families, but the
+# estimate gate applies uniformly to every recipe that adapts successfully.
+targets: []
