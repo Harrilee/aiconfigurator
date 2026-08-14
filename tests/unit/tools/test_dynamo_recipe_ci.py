@@ -35,7 +35,7 @@ spec:
 """
 
 
-def _manifest(path: Path, *, expected_estimate: str = "unavailable", max_matches: int = 1) -> Path:
+def _manifest(path: Path, *, max_matches: int = 1) -> Path:
     path.write_text(
         f"""
 version: 1
@@ -47,10 +47,8 @@ defaults:
 targets:
   - id: fixture
     include: recipes/fixture/**/deploy.yaml
-    gate: true
     min_matches: 1
     max_matches: {max_matches}
-    expected: {{mapping: adapted, estimate: {expected_estimate}}}
 """
     )
     return path
@@ -144,26 +142,22 @@ def test_missing_system_fallback_prefers_path_markers(path, expected, source, tm
     assert runner._missing_system_fallback(recipe, manifest) == (expected, source)
 
 
-def test_path_overrides_preserve_recipe_specific_workload_and_expectation(tmp_path):
+def test_path_overrides_preserve_recipe_specific_workload(tmp_path):
     root = _dynamo_tree(tmp_path)
     manifest_path = _manifest(tmp_path / "manifest.yaml")
     manifest_path.write_text(
         manifest_path.read_text().replace(
-            "    expected: {mapping: adapted, estimate: unavailable}",
-            """    path_overrides:
-      recipes/fixture/vllm/deploy.yaml: {concurrency: 3}
-    expected: {mapping: adapted, estimate: unavailable}
-    expected_by_path:
-      recipes/fixture/vllm/deploy.yaml: {estimate: valid}""",
+            "    max_matches: 1",
+            """    max_matches: 1
+    path_overrides:
+      recipes/fixture/vllm/deploy.yaml: {concurrency: 3}""",
         )
     )
     manifest = runner.load_manifest(manifest_path)
     recipe = runner.discover_recipes(root, manifest)[0][0]
     record = runner.adapt_recipe(recipe, manifest, "abc123")[0]
-    record["estimate"] = {"status": "unavailable"}
 
     assert record["request"]["workload"]["concurrency"] == 3
-    assert runner.gate_violations([record], manifest, []) == [f"{record['id']}: estimate regressed to unavailable"]
 
 
 def test_discovery_reports_overlapping_targets_and_count_drift(tmp_path):
@@ -175,8 +169,6 @@ def test_discovery_reports_overlapping_targets_and_count_drift(tmp_path):
         + """
   - id: overlap
     include: recipes/fixture/**/deploy.yaml
-    gate: false
-    expected: {mapping: any, estimate: any}
 """
     )
 
@@ -188,27 +180,25 @@ def test_discovery_reports_overlapping_targets_and_count_drift(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("expected", "actual", "violates"),
+    ("mapping", "estimate", "violates"),
     [
-        ("valid", "valid", False),
-        ("valid", "unavailable", True),
-        ("unavailable", "unavailable", False),
-        ("unavailable", "valid", False),
-        ("unavailable", "error", True),
-        ("unavailable", "timeout", True),
+        ("adapted", "valid", False),
+        ("adapted", "unavailable", True),
+        ("adapted", "error", True),
+        ("adapted", "timeout", True),
+        ("rejected", "not_run", False),
     ],
 )
-def test_gate_blocks_regressions_but_allows_known_unavailable_and_improvements(tmp_path, expected, actual, violates):
-    manifest = runner.load_manifest(_manifest(tmp_path / "manifest.yaml", expected_estimate=expected))
+def test_gate_requires_every_adapted_estimate_to_be_valid(mapping, estimate, violates):
     record = {
         "id": "point",
         "recipe": "recipes/fixture/vllm/deploy.yaml",
         "target": "fixture",
-        "mapping": {"status": "adapted"},
-        "estimate": {"status": actual},
+        "mapping": {"status": mapping},
+        "estimate": {"status": estimate},
     }
 
-    violations = runner.gate_violations([record], manifest, [])
+    violations = runner.gate_violations([record], [])
 
     assert bool(violations) is violates
 
@@ -325,3 +315,35 @@ def test_summary_counts_mapping_defaults():
     summary = runner._summary([record], "abc123", [])
 
     assert summary["mapping_defaults"] == {"system_name=gb300": 1}
+
+
+def test_comment_markdown_highlights_failed_adapted_estimates():
+    records = [
+        {
+            "id": "valid",
+            "recipe": "recipes/valid/deploy.yaml",
+            "mapping": {"status": "adapted"},
+            "estimate": {"status": "valid"},
+        },
+        {
+            "id": "unavailable",
+            "recipe": "recipes/unavailable/deploy.yaml",
+            "mapping": {"status": "adapted"},
+            "estimate": {"status": "unavailable"},
+        },
+        {
+            "id": "rejected",
+            "recipe": "recipes/rejected/deploy.yaml",
+            "mapping": {"status": "rejected"},
+            "estimate": {"status": "not_run"},
+        },
+    ]
+    summary = runner._summary(records, "abc123", ["unavailable failed"])
+
+    comment = runner._comment_markdown(summary, records)
+
+    assert "**Estimate gate: FAIL**" in comment
+    assert "Successfully adapted: 2" in comment
+    assert "Adapted estimates that failed: 1" in comment
+    assert "`recipes/unavailable/deploy.yaml`" in comment
+    assert "`recipes/rejected/deploy.yaml`" not in comment

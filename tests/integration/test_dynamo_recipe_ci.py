@@ -49,10 +49,8 @@ defaults:
 targets:
   - id: qwen-sol
     include: recipes/qwen/**/deploy.yaml
-    gate: true
     min_matches: 1
     max_matches: 1
-    expected: {mapping: adapted, estimate: valid}
 """
     )
     subprocess.run(["git", "init", "-q"], cwd=dynamo_root, check=True)
@@ -79,3 +77,4 @@ targets:
     assert report["summary"]["gate_passed"] is True
     assert report["summary"]["estimates"] == {"valid": 1}
     assert report["results"][0]["estimate"]["result"]["tokens_per_second"] > 0
+    assert "**Estimate gate: PASS**" in (output_dir / "comment.md").read_text()

@@ -20,12 +20,15 @@ for CI. Every result records the exact Dynamo commit, recipe and performance
 paths, canonical `EstimateRequestV1`, lowered CLI arguments, mapping
 diagnostics, and the estimate result or classified failure.
 
-`aic_1743.yaml` is the blocking corpus. Its selectors intentionally match the
-50 configurations in AIC-1743. A target expected to be `valid` fails if it
-becomes unavailable; a target with a known `unavailable` baseline may improve
-to valid, but an unexpected exception or timeout still fails. Recipes outside
-the manifest are discovered and replayed for coverage reporting without
-blocking the gate.
+`corpus.yaml` contains only safe, corpus-wide defaults and optional literal
+overrides. Every recipe that adapts successfully is part of the estimate gate:
+`valid` passes, while `unavailable`, `error`, and `timeout` fail. Recipes that
+cannot be mapped safely remain visible in the report but do not enter the
+estimate gate.
+
+CI uploads `results.json`, the full `summary.md`, and a concise `comment.md`.
+For pull requests it also creates or updates one bot comment with the concise
+summary and links to the workflow run and full report artifact.
 
 Workload values that do not exist as safe literals in recipe YAML belong in
 the manifest. In particular, speculative acceptance length and the AIC
