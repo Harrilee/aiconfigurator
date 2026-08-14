@@ -1,0 +1,86 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: "Dynamo Recipe Replay"
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: dynamo-recipe-replay-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  replay:
+    name: AIC-1743 recipe regression gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout AIC
+        uses: actions/checkout@v5
+        with:
+          lfs: true
+          persist-credentials: false
+
+      - name: Checkout live Dynamo main
+        uses: actions/checkout@v5
+        with:
+          repository: ai-dynamo/dynamo
+          ref: main
+          path: dynamo-upstream
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install AIC
+        run: |
+          python -m pip install --upgrade pip
+          if grep -q 'build-backend = "maturin"' aic-core/pyproject.toml 2>/dev/null; then
+            python -m pip install -e aic-core
+          fi
+          python -m pip install -e ".[dev]"
+
+      - name: Replay Dynamo recipes
+        id: replay
+        continue-on-error: true
+        run: |
+          python -m tools.dynamo_recipe_ci.runner \
+            --dynamo-root dynamo-upstream \
+            --output-dir /tmp/dynamo-recipe-replay \
+            --jobs 4 \
+            --timeout-seconds 300
+
+      - name: Add job summary
+        if: always()
+        run: |
+          if [ -f /tmp/dynamo-recipe-replay/summary.md ]; then
+            cat /tmp/dynamo-recipe-replay/summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::Dynamo recipe replay did not produce a summary"
+          fi
+
+      - name: Upload replay artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: dynamo-recipe-replay
+          path: /tmp/dynamo-recipe-replay
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce replay gate
+        if: always()
+        env:
+          REPLAY_OUTCOME: ${{ steps.replay.outcome }}
+        run: |
+          if [ "${REPLAY_OUTCOME}" != "success" ]; then
+            echo "::error::AIC-1743 Dynamo recipe replay gate failed"
+            exit 1
+          fi

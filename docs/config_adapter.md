@@ -74,6 +74,11 @@ Conflicting command and ConfigMap values are rejected. An unpinned backend
 version is accepted with a warning because AIC will choose its latest compatible
 database version.
 
+When global concurrency is not evenly divisible by source replicas and
+attention-DP ranks, callers must provide an explicit aggregated or decode batch
+override. The canonical request keeps the original global concurrency and
+records the batch override as a provenance assumption.
+
 Every discovered operating point creates one ordered outcome. Partial success is
 allowed; invalid points are never omitted.
 
@@ -94,7 +99,8 @@ All actual worker counts must be positive. MTP rows require explicit `nextn` and
 
 `DynamoRecipeSource` safely parses multi-document YAML containing ConfigMaps,
 one DynamoGraphDeployment, and optional performance Jobs. It supports standard
-agg and P/D-disaggregated vLLM, SGLang, and TRT-LLM workers.
+agg and P/D-disaggregated vLLM, SGLang, and TRT-LLM workers in both the legacy
+`spec.services` schema and the current `spec.components` schema.
 
 Pass a `Path` to load a YAML file. A plain `str` is always parsed as YAML text
 and is never resolved as a filesystem path.
@@ -123,6 +129,9 @@ workload.
 Adapter v1 rejects EPD/encode, AFD, heterogeneous hardware,
 `componentType: main`, unsupported backends, ambiguous values, arbitrary
 shell-derived values, and topologies other than agg or P/D disaggregation.
+For a worker launched through a shell wrapper, the adapter may extract a
+literal trailing `python -m dynamo.<backend>` invocation; it never evaluates
+the wrapper or accepts shell control operators in the extracted invocation.
 Parameterized benchmark cookbooks, Slurm command templates, and Helm values
 must be rendered into a concrete recipe or DynamoGraphDeployment first. The
 programmatic adapter never evaluates template expressions or executes commands.
